@@ -1,0 +1,22 @@
+# Build outputs
+*.exe
+*.new.exe
+*.dll
+*.pdb
+*.cache
+
+# Runtime state
+data/
+logs/
+
+# Local machine configuration
+config/settings.ini
+
+# Downloaded dependencies
+modules/webview2/
+
+# Windows / editor noise
+Thumbs.db
+Desktop.ini
+.vs/
+.vscode/
