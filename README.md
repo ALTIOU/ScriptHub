@@ -1,46 +1,67 @@
 # ScriptHub
 
-ScriptHub 是一个 Windows 托盘小工具，用来统一管理本机常用的小脚本和小程序。当前主要负责两个功能：QQ 音乐桌面歌词自动隐藏，以及 Codex 额度小窗。
+ScriptHub 是一个 Windows 托盘小工具，用来集中管理轻量级桌面自动化脚本。
 
-## 当前功能
+当前内置两个模块：
 
-### QQ 音乐桌面歌词自动隐藏
+- QQ 音乐桌面歌词自动显示 / 隐藏
+- Codex 额度小窗
 
-- QQ 音乐正在播放时：自动显示桌面歌词。
-- QQ 音乐暂停或停止时：自动隐藏桌面歌词。
-- 退出 ScriptHub 时：恢复桌面歌词显示，避免退出后状态不一致。
-- 实现方式使用 QQ 音乐自己的 `Ctrl + Alt + W` 桌面歌词快捷键，不是简单遮挡窗口，也不是外部强行隐藏窗口。
+项目目标是把零散的小脚本做成一个安静、可开机自启、可托盘管理的本地程序，避免多个脚本窗口常驻桌面。
 
-需要保持 QQ 音乐设置里的“自动打开歌词”开启，这样 QQ 音乐才会自己创建桌面歌词窗口。
+## 功能
+
+### QQ 音乐桌面歌词
+
+- 播放时自动显示 QQ 音乐桌面歌词。
+- 暂停或停止时自动隐藏 QQ 音乐桌面歌词。
+- 退出 ScriptHub 时恢复桌面歌词显示，避免状态残留。
+- 使用 QQ 音乐自己的 `Ctrl + Alt + W` 桌面歌词快捷键切换，不通过遮挡窗口模拟隐藏。
+
+使用前需要在 QQ 音乐里开启“自动打开歌词”，并确认“显示/隐藏桌面歌词”的快捷键是 `Ctrl + Alt + W`。
 
 ### Codex 额度小窗
 
-- 在 ScriptHub 内打开官方 Codex 用量页面：`https://chatgpt.com/codex/cloud/settings/analytics#usage`。
-- 小窗会显示当前时间、日期、星期、5 小时额度和每周额度。
-- 小窗使用 WebView2 登录状态，首次使用时需要在窗口里登录一次。
-- `codexQuota.openOnStartup=true` 时，ScriptHub 启动后会自动打开额度小窗。
-- `codexQuota.refreshIntervalMinutes=5` 时，每 5 分钟强制刷新一次官方用量页面，让额度信息保持更新。
-- ScriptHub 不负责窗口置顶、吸附或摆放位置；窗口位置可以自己拖动，也可以用其他窗口管理工具处理。
+- 在内置 WebView2 窗口中打开 Codex 官方用量页面。
+- 抽取页面里的 5 小时额度和每周额度，渲染成简洁的小窗。
+- 显示当前时间、日期和星期。
+- 支持启动时自动打开。
+- 支持按配置间隔刷新页面。
 
-## 常用路径
+首次使用需要在 WebView2 窗口里登录 ChatGPT / Codex 账号。登录状态保存在本地 WebView2 用户数据目录中，不会提交到仓库。
 
-- 程序：`C:\Users\19715\Documents\ScriptHub\ScriptHub.exe`
-- 配置：`C:\Users\19715\Documents\ScriptHub\config\settings.ini`
-- 配置模板：`C:\Users\19715\Documents\ScriptHub\config\settings.example.ini`
-- 日志：`C:\Users\19715\Documents\ScriptHub\logs\ScriptHub.log`
-- 开机启动脚本：`C:\Users\19715\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\ScriptHubStartup.vbs`
+## 环境要求
+
+- Windows
+- PowerShell
+- .NET Framework C# 编译器 `csc.exe`
+- Microsoft Edge WebView2 Runtime
+
+大多数 Windows 机器已经自带 .NET Framework 和 WebView2 Runtime。如果缺少 WebView2 Runtime，可以从 Microsoft 官方渠道安装。
+
+## 快速开始
+
+克隆仓库后，在项目根目录运行：
+
+```powershell
+Copy-Item .\config\settings.example.ini .\config\settings.ini
+.\scripts\build.ps1
+.\ScriptHub.exe
+```
+
+构建完成后，ScriptHub 会出现在系统托盘中。
 
 ## 使用方式
 
-- 右键托盘图标可以打开菜单。
-- 菜单里可以启用或暂停 QQ 音乐歌词脚本。
-- 菜单里可以打开 Codex 额度小窗。
-- 菜单里可以暂停全部脚本、重新加载配置、打开日志目录或退出程序。
-- 双击托盘图标会打开 ScriptHub 文件夹。
+- 右键托盘图标打开菜单。
+- 在菜单中启用或暂停 QQ 音乐歌词模块。
+- 在菜单中打开 Codex 额度小窗。
+- 可以从菜单暂停全部脚本、重新加载配置、打开日志目录或退出程序。
+- 双击托盘图标会打开项目目录。
 
 ## 配置说明
 
-本机配置放在 `config\settings.ini`，这个文件不会提交到 GitHub。仓库里只提交 `config\settings.example.ini` 作为模板。
+本地配置文件是 `config/settings.ini`。仓库只提交 `config/settings.example.ini` 作为模板。
 
 常用配置项：
 
@@ -52,9 +73,22 @@ qqMusicLyrics.minActionGapMs=1200
 codexQuota.url=https://chatgpt.com/codex/cloud/settings/analytics#usage
 codexQuota.width=1094
 codexQuota.height=496
+codexQuota.x=-1
+codexQuota.y=-1
 codexQuota.openOnStartup=true
 codexQuota.refreshIntervalMinutes=5
 ```
+
+说明：
+
+- `qqMusicLyrics.enabled`：是否启用 QQ 音乐桌面歌词自动隐藏。
+- `qqMusicLyrics.pollIntervalMs`：检测播放状态的间隔。
+- `qqMusicLyrics.minActionGapMs`：两次切换歌词状态之间的最小间隔。
+- `codexQuota.url`：Codex 用量页面地址。
+- `codexQuota.width` / `codexQuota.height`：额度小窗大小。
+- `codexQuota.x` / `codexQuota.y`：额度小窗位置，设为 `-1` 时使用系统默认位置。
+- `codexQuota.openOnStartup`：ScriptHub 启动时是否自动打开额度小窗。
+- `codexQuota.refreshIntervalMinutes`：额度页面强制刷新间隔，设为 `0` 可关闭定时刷新。
 
 ## 构建
 
@@ -64,7 +98,12 @@ codexQuota.refreshIntervalMinutes=5
 .\scripts\build.ps1
 ```
 
-构建脚本会自动下载 WebView2 WinForms 包到 `modules\webview2`，把运行需要的 DLL 复制到 `ScriptHub.exe` 旁边，然后使用系统自带的 .NET Framework C# 编译器生成程序。如果 ScriptHub 正在运行，构建脚本会自动重启它。
+构建脚本会：
+
+- 下载 WebView2 WinForms NuGet 包到 `modules/webview2`。
+- 复制运行需要的 WebView2 DLL 到项目根目录。
+- 使用系统自带的 .NET Framework C# 编译器生成 `ScriptHub.exe`。
+- 如果 ScriptHub 已经在运行，构建后会自动重启它。
 
 ## 开机自启
 
@@ -75,17 +114,32 @@ codexQuota.refreshIntervalMinutes=5
 .\scripts\uninstall-startup.ps1
 ```
 
-如果想手动关闭开机自启，也可以删除启动目录里的 `ScriptHubStartup.vbs`。
+安装脚本会在当前用户的 Windows 启动目录中创建一个 VBS 启动器，用于静默启动 `ScriptHub.exe`。
+
+## 目录结构
+
+```text
+ScriptHub/
+  config/
+    settings.example.ini
+  scripts/
+    build.ps1
+    install-startup.ps1
+    uninstall-startup.ps1
+  src/
+    Program.cs
+  README.md
+```
 
 ## Git 管理
 
-仓库只提交源码、脚本、README 和配置模板。下面这些文件不会提交：
+仓库只提交源码、脚本、README 和配置模板。以下内容会被忽略：
 
 - `ScriptHub.exe`
 - WebView2 运行 DLL
-- `config\settings.ini`
-- `data\`
-- `logs\`
-- `modules\`
+- `config/settings.ini`
+- `data/`
+- `logs/`
+- `modules/`
 
-这样 GitHub 仓库里不会包含本机登录状态、日志、下载缓存和生成文件。
+这样可以避免把本地登录状态、日志、下载缓存和生成文件提交到仓库。
