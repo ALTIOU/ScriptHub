@@ -3,15 +3,16 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
-using Microsoft.Web.WebView2.Core;
-using Microsoft.Web.WebView2.WinForms;
 
 namespace ScriptHub
 {
@@ -159,7 +160,7 @@ namespace ScriptHub
         {
             if (_codexQuotaForm == null || _codexQuotaForm.IsDisposed)
             {
-                _codexQuotaForm = new CodexQuotaForm(_paths, _logger, _settings.CodexQuota);
+                _codexQuotaForm = new CodexQuotaForm(_logger, _settings.CodexQuota);
                 _codexQuotaForm.FormClosed += (_, __) =>
                 {
                     SaveSettings();
@@ -378,124 +379,192 @@ namespace ScriptHub
         }
     }
 
+
     internal sealed class CodexQuotaForm : Form
     {
-        private readonly AppPaths _paths;
         private readonly Logger _logger;
         private readonly CodexQuotaSettings _settings;
-        private readonly WebView2 _webView;
+        private readonly CodexAppServerQuotaClient _quotaClient;
         private readonly System.Windows.Forms.Timer _refreshTimer;
-        private bool _initialized;
-        private int _quotaNavigateAttempts;
+        private readonly System.Windows.Forms.Timer _clockTimer;
+        private readonly Label _clockLabel;
+        private readonly Label _dateLabel;
+        private readonly Label _statusLabel;
+        private readonly QuotaCardControl _primaryCard;
+        private readonly QuotaCardControl _secondaryCard;
+        private bool _refreshInProgress;
+        private DateTime? _lastSuccessfulRefresh;
 
-        public CodexQuotaForm(AppPaths paths, Logger logger, CodexQuotaSettings settings)
+        public CodexQuotaForm(Logger logger, CodexQuotaSettings settings)
         {
-            _paths = paths;
             _logger = logger;
             _settings = settings ?? new CodexQuotaSettings();
+            _quotaClient = new CodexAppServerQuotaClient();
 
             Text = "Codex 额度小窗";
             Icon = SystemIcons.Application;
-            MinimumSize = new Size(420, 320);
-            Size = new Size(Math.Max(420, _settings.Width), Math.Max(320, _settings.Height));
+            BackColor = Color.White;
+            ForeColor = Color.FromArgb(17, 24, 39);
+            MinimumSize = new Size(640, 420);
+            Size = new Size(Math.Max(640, _settings.Width), Math.Max(420, _settings.Height));
             StartPosition = FormStartPosition.CenterScreen;
+            KeyPreview = true;
             if (_settings.X >= 0 && _settings.Y >= 0)
             {
                 StartPosition = FormStartPosition.Manual;
                 Location = new Point(_settings.X, _settings.Y);
             }
 
-            _webView = new WebView2
+            _clockLabel = new Label
             {
-                Dock = DockStyle.Fill
+                AutoSize = false,
+                Font = new Font("Segoe UI", 44f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(15, 23, 42),
+                TextAlign = ContentAlignment.MiddleCenter,
+                UseCompatibleTextRendering = true
             };
-            Controls.Add(_webView);
+            _dateLabel = new Label
+            {
+                AutoSize = false,
+                Font = new Font("Microsoft YaHei UI", 17f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(100, 116, 139),
+                TextAlign = ContentAlignment.MiddleCenter,
+                UseCompatibleTextRendering = true
+            };
+            _primaryCard = new QuotaCardControl("5 小时使用额度");
+            _secondaryCard = new QuotaCardControl("每周使用额度");
+            _statusLabel = new Label
+            {
+                AutoSize = false,
+                Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(100, 116, 139),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Text = "正在读取本机 Codex 额度...",
+                UseCompatibleTextRendering = true
+            };
+
+            Controls.Add(_clockLabel);
+            Controls.Add(_dateLabel);
+            Controls.Add(_primaryCard);
+            Controls.Add(_secondaryCard);
+            Controls.Add(_statusLabel);
+
+            var menu = new ContextMenuStrip();
+            menu.Items.Add(new ToolStripMenuItem("立即刷新", null, (_, __) => RefreshQuota()));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("关闭窗口", null, (_, __) => Close()));
+            ContextMenuStrip = menu;
 
             _refreshTimer = new System.Windows.Forms.Timer();
             _refreshTimer.Interval = Math.Max(1, _settings.RefreshIntervalMinutes) * 60 * 1000;
-            _refreshTimer.Tick += (_, __) => RefreshQuotaPage();
+            _refreshTimer.Tick += (_, __) => RefreshQuota();
+            _clockTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            _clockTimer.Tick += (_, __) => UpdateClock();
 
-            Load += CodexQuotaForm_Load;
+            Load += (_, __) =>
+            {
+                UpdateClock();
+                _clockTimer.Start();
+                if (_settings.RefreshIntervalMinutes > 0)
+                {
+                    _refreshTimer.Start();
+                }
+                RefreshQuota();
+            };
             Move += (_, __) => RememberBounds();
-            Resize += (_, __) => RememberBounds();
+            Resize += (_, __) =>
+            {
+                RememberBounds();
+                LayoutQuotaControls();
+            };
+            Shown += (_, __) => LayoutQuotaControls();
+            KeyDown += (_, e) =>
+            {
+                if (e.KeyCode == Keys.F5)
+                {
+                    RefreshQuota();
+                    e.Handled = true;
+                }
+            };
             FormClosing += (_, __) => RememberBounds();
             FormClosed += (_, __) =>
             {
                 _refreshTimer.Stop();
                 _refreshTimer.Dispose();
+                _clockTimer.Stop();
+                _clockTimer.Dispose();
             };
         }
 
-        private async void CodexQuotaForm_Load(object sender, EventArgs e)
+        private void LayoutQuotaControls()
         {
-            if (_initialized)
+            if (ClientSize.Width <= 0 || ClientSize.Height <= 0)
             {
                 return;
             }
-            _initialized = true;
 
-            try
-            {
-                var userDataFolder = Path.Combine(_paths.RootDir, "data", "codex-quota-webview");
-                Directory.CreateDirectory(userDataFolder);
+            _clockLabel.SetBounds(0, 46, ClientSize.Width, 58);
+            _dateLabel.SetBounds(0, 109, ClientSize.Width, 30);
 
-                var environment = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
-                await _webView.EnsureCoreWebView2Async(environment);
-                _webView.CoreWebView2.Settings.AreDevToolsEnabled = true;
-                _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
-                _webView.CoreWebView2.DocumentTitleChanged += (_, __) =>
-                {
-                    var title = _webView.CoreWebView2.DocumentTitle;
-                    Text = string.IsNullOrWhiteSpace(title) ? "Codex 额度小窗" : "Codex 额度小窗";
-                };
-                _webView.CoreWebView2.NavigationCompleted += async (_, __) =>
-                {
-                    try
-                    {
-                        EnsureQuotaPageAfterLogin();
-                        await _webView.CoreWebView2.ExecuteScriptAsync(BuildLiteModeScript());
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error("Codex quota lite script failed: " + ex.Message);
-                    }
-                };
-                await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(BuildLiteModeScript());
-                _webView.CoreWebView2.Navigate(_settings.Url);
-                if (_settings.RefreshIntervalMinutes > 0)
-                {
-                    _refreshTimer.Start();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error("Open Codex quota window failed: " + ex);
-                MessageBox.Show("Codex 额度小窗打开失败，详情见日志。", "ScriptHub", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            const int cardHeight = 166;
+            const int cardGap = 18;
+            var cardWidth = Math.Min(320, Math.Max(220, (ClientSize.Width - 80 - cardGap) / 2));
+            var totalWidth = cardWidth * 2 + cardGap;
+            var left = Math.Max(20, (ClientSize.Width - totalWidth) / 2);
+            var top = 194;
+            _primaryCard.SetBounds(left, top, cardWidth, cardHeight);
+            _secondaryCard.SetBounds(left + cardWidth + cardGap, top, cardWidth, cardHeight);
+            _statusLabel.SetBounds(0, top + cardHeight + 17, ClientSize.Width, 24);
         }
 
-        private void RefreshQuotaPage()
+        private void UpdateClock()
         {
+            var now = DateTime.Now;
+            _clockLabel.Text = now.ToString("HH:mm:ss");
+            var weekdays = new[] { "星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六" };
+            _dateLabel.Text = now.Year + "年" + now.Month + "月" + now.Day + "日 " + weekdays[(int)now.DayOfWeek];
+        }
+
+        private async void RefreshQuota()
+        {
+            if (_refreshInProgress || IsDisposed)
+            {
+                return;
+            }
+
+            _refreshInProgress = true;
+            if (!_lastSuccessfulRefresh.HasValue)
+            {
+                _statusLabel.ForeColor = Color.FromArgb(100, 116, 139);
+                _statusLabel.Text = "正在读取本机 Codex 额度...";
+            }
+
             try
             {
-                if (_webView == null || _webView.CoreWebView2 == null)
+                var snapshot = await Task.Run(() => _quotaClient.ReadQuota());
+                if (IsDisposed)
                 {
                     return;
                 }
 
-                var source = _webView.CoreWebView2.Source ?? string.Empty;
-                if (source.IndexOf("/codex/cloud/settings/analytics", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    _webView.CoreWebView2.Reload();
-                }
-                else
-                {
-                    _webView.CoreWebView2.Navigate(_settings.Url);
-                }
+                _primaryCard.UpdateQuota(snapshot.Primary);
+                _secondaryCard.UpdateQuota(snapshot.Secondary);
+                _lastSuccessfulRefresh = DateTime.Now;
+                _statusLabel.ForeColor = Color.FromArgb(100, 116, 139);
+                _statusLabel.Text = "本机 Codex 数据 · 更新于 " + _lastSuccessfulRefresh.Value.ToString("HH:mm:ss");
+                _logger.Info("Codex quota refreshed via app-server. Plan=" + (snapshot.PlanType ?? "unknown"));
             }
             catch (Exception ex)
             {
-                _logger.Error("Refresh Codex quota page failed: " + ex.Message);
+                _logger.Error("Read Codex quota via app-server failed: " + ex);
+                _statusLabel.ForeColor = Color.FromArgb(185, 28, 28);
+                _statusLabel.Text = _lastSuccessfulRefresh.HasValue
+                    ? "读取失败，保留上次数据 · " + _lastSuccessfulRefresh.Value.ToString("HH:mm:ss")
+                    : "读取失败，请确认 Codex 桌面端已登录";
+            }
+            finally
+            {
+                _refreshInProgress = false;
             }
         }
 
@@ -511,296 +580,403 @@ namespace ScriptHub
             _settings.Width = Size.Width;
             _settings.Height = Size.Height;
         }
+    }
 
-        private void EnsureQuotaPageAfterLogin()
+    internal sealed class QuotaCardControl : Control
+    {
+        private readonly string _title;
+        private int? _remainingPercent;
+        private DateTime? _resetsAt;
+
+        public QuotaCardControl(string title)
         {
-            if (_webView == null || _webView.CoreWebView2 == null)
+            _title = title;
+            BackColor = Color.White;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
+        }
+
+        public void UpdateQuota(CodexRateLimitWindow window)
+        {
+            _remainingPercent = window == null ? (int?)null : Math.Max(0, Math.Min(100, 100 - window.UsedPercent));
+            _resetsAt = window == null ? (DateTime?)null : window.ResetsAt;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            var cardBounds = new Rectangle(1, 1, Math.Max(1, Width - 2), Math.Max(1, Height - 2));
+            using (var path = CreateRoundedRectangle(cardBounds, 16))
+            using (var border = new Pen(Color.FromArgb(229, 231, 235)))
+            using (var fill = new SolidBrush(Color.White))
             {
-                return;
+                e.Graphics.FillPath(fill, path);
+                e.Graphics.DrawPath(border, path);
             }
 
-            var source = _webView.CoreWebView2.Source ?? string.Empty;
-            if (source.IndexOf("/codex/cloud/settings/analytics", StringComparison.OrdinalIgnoreCase) >= 0)
+            const int padding = 26;
+            using (var titleFont = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular))
+            using (var valueFont = new Font("Segoe UI", 25f, FontStyle.Bold))
+            using (var suffixFont = new Font("Microsoft YaHei UI", 15f, FontStyle.Regular))
+            using (var resetFont = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular))
             {
-                _quotaNavigateAttempts = 0;
-                return;
+                TextRenderer.DrawText(e.Graphics, _title, titleFont,
+                    new Rectangle(padding, 24, Width - padding * 2, 22), Color.FromArgb(100, 116, 139),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+
+                var number = _remainingPercent.HasValue ? _remainingPercent.Value + "%" : "--";
+                var numberSize = TextRenderer.MeasureText(e.Graphics, number, valueFont, Size.Empty, TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(e.Graphics, number, valueFont,
+                    new Rectangle(padding, 49, numberSize.Width + 4, 38), Color.FromArgb(15, 23, 42),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(e.Graphics, "剩余", suffixFont,
+                    new Rectangle(padding + numberSize.Width + 8, 57, 62, 25), Color.FromArgb(15, 23, 42),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+
+                var track = new Rectangle(padding, 102, Math.Max(1, Width - padding * 2), 12);
+                using (var trackPath = CreateRoundedRectangle(track, 6))
+                using (var trackBrush = new SolidBrush(Color.FromArgb(229, 231, 235)))
+                {
+                    e.Graphics.FillPath(trackBrush, trackPath);
+                }
+
+                if (_remainingPercent.HasValue && _remainingPercent.Value > 0)
+                {
+                    var fillWidth = Math.Max(4, (int)Math.Round(track.Width * (_remainingPercent.Value / 100.0)));
+                    var fill = new Rectangle(track.X, track.Y, Math.Min(track.Width, fillWidth), track.Height);
+                    using (var fillPath = CreateRoundedRectangle(fill, 6))
+                    using (var fillBrush = new SolidBrush(Color.FromArgb(34, 197, 94)))
+                    {
+                        e.Graphics.FillPath(fillBrush, fillPath);
+                    }
+                }
+
+                var reset = "重置时间: " + FormatResetTime(_resetsAt);
+                TextRenderer.DrawText(e.Graphics, reset, resetFont,
+                    new Rectangle(padding, 132, Width - padding * 2, 23), Color.FromArgb(100, 116, 139),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private static string FormatResetTime(DateTime? resetAt)
+        {
+            if (!resetAt.HasValue)
+            {
+                return "读取中";
             }
 
-            if (source.IndexOf("chatgpt.com", StringComparison.OrdinalIgnoreCase) < 0)
+            var now = DateTime.Now;
+            return resetAt.Value.Date == now.Date
+                ? resetAt.Value.ToString("HH:mm")
+                : resetAt.Value.Year + "年" + resetAt.Value.Month + "月" + resetAt.Value.Day + "日 " + resetAt.Value.ToString("HH:mm");
+        }
+
+        private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
+        {
+            var path = new GraphicsPath();
+            var diameter = Math.Max(1, radius * 2);
+            path.AddArc(bounds.X, bounds.Y, diameter, diameter, 180, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Y, diameter, diameter, 270, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
+    internal sealed class CodexAppServerQuotaClient
+    {
+        private const int InitializeTimeoutMs = 10000;
+        private const int ReadTimeoutMs = 15000;
+
+        public CodexQuotaSnapshot ReadQuota()
+        {
+            var executable = FindCodexExecutable();
+            if (string.IsNullOrWhiteSpace(executable))
             {
-                return;
+                throw new InvalidOperationException("未找到本机 Codex CLI。请确认 Codex 桌面端已安装。");
             }
 
-            if (source.IndexOf("/api/auth/", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                source.IndexOf("auth.openai.com", StringComparison.OrdinalIgnoreCase) >= 0)
+            var startInfo = new ProcessStartInfo
             {
-                return;
-            }
+                FileName = executable,
+                Arguments = "app-server --listen stdio://",
+                WorkingDirectory = Path.GetDirectoryName(executable),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
 
-            if (_quotaNavigateAttempts >= 3)
+            using (var process = new Process { StartInfo = startInfo })
             {
-                return;
-            }
-
-            _quotaNavigateAttempts++;
-            BeginInvoke(new Action(() =>
-            {
+                process.Start();
+                var errorTask = process.StandardError.ReadToEndAsync();
+                var serializer = new JavaScriptSerializer();
                 try
                 {
-                    _webView.CoreWebView2.Navigate(_settings.Url);
+                    Send(process, serializer, new Dictionary<string, object>
+                    {
+                        { "jsonrpc", "2.0" },
+                        { "id", 1 },
+                        { "method", "initialize" },
+                        { "params", new Dictionary<string, object>
+                            {
+                                { "clientInfo", new Dictionary<string, object>
+                                    {
+                                        { "name", "ScriptHub" },
+                                        { "version", "1.0" }
+                                    }
+                                },
+                                { "capabilities", new Dictionary<string, object>() }
+                            }
+                        }
+                    });
+                    ReadResponse(process, serializer, 1, InitializeTimeoutMs);
+
+                    Send(process, serializer, new Dictionary<string, object>
+                    {
+                        { "jsonrpc", "2.0" },
+                        { "method", "initialized" }
+                    });
+                    Send(process, serializer, new Dictionary<string, object>
+                    {
+                        { "jsonrpc", "2.0" },
+                        { "id", 2 },
+                        { "method", "account/rateLimits/read" },
+                        { "params", null }
+                    });
+
+                    var response = ReadResponse(process, serializer, 2, ReadTimeoutMs);
+                    return ParseSnapshot(response);
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error("Navigate Codex quota page failed: " + ex.Message);
+                    var stderr = StopProcess(process, errorTask);
+                    if (!string.IsNullOrWhiteSpace(stderr))
+                    {
+                        throw new InvalidOperationException(ex.Message + " " + stderr.Trim(), ex);
+                    }
+                    throw;
                 }
-            }));
+                finally
+                {
+                    StopProcess(process, errorTask);
+                }
+            }
         }
 
-        private static string BuildLiteModeScript()
+        private static void Send(Process process, JavaScriptSerializer serializer, IDictionary<string, object> message)
         {
-            return @"
-(function () {
-  if (window.__scriptHubCodexQuotaLiteInstalled) {
-    return;
-  }
-  window.__scriptHubCodexQuotaLiteInstalled = true;
-
-  var groups = [
-    { title: '5 小时使用限额' },
-    { title: '每周使用限额' }
-  ];
-  var lastData = [];
-
-  function normalizeText(text) {
-    return (text || '')
-      .replace(/\s+/g, ' ')
-      .replace(/剩\s*余/g, '剩余')
-      .replace(/重置\s*时间/g, '重置时间')
-      .trim();
-  }
-
-  function getOriginalText() {
-    var clone = document.body.cloneNode(true);
-    var lite = clone.querySelector('#__scriptHubCodexQuotaLite');
-    if (lite && lite.parentNode) {
-      lite.parentNode.removeChild(lite);
-    }
-    return normalizeText(clone.textContent || clone.innerText || '');
-  }
-
-  function findTitleIndex(text, title) {
-    var index = text.indexOf(title);
-    if (index >= 0) {
-      return index;
-    }
-    if (title === '5 小时使用限额') {
-      return text.indexOf('5小时使用限额');
-    }
-    return -1;
-  }
-
-  function getSectionText(text, title) {
-    var start = findTitleIndex(text, title);
-    if (start < 0) {
-      return '';
-    }
-
-    var end = text.length;
-    for (var i = 0; i < groups.length; i++) {
-      var otherTitle = groups[i].title;
-      if (otherTitle === title) {
-        continue;
-      }
-      var otherIndex = findTitleIndex(text, otherTitle);
-      if (otherIndex > start && otherIndex < end) {
-        end = otherIndex;
-      }
-    }
-
-    return text.substring(start, end);
-  }
-
-  function ensureWrapper() {
-    var wrapper = document.getElementById('__scriptHubCodexQuotaLite');
-    if (!wrapper) {
-      wrapper = document.createElement('div');
-      wrapper.id = '__scriptHubCodexQuotaLite';
-      document.body.appendChild(wrapper);
-    }
-    wrapper.style.cssText =
-      'position:fixed!important;inset:0!important;z-index:2147483647!important;' +
-      'box-sizing:border-box!important;display:flex!important;flex-direction:column!important;gap:20px!important;' +
-      'align-items:center!important;justify-content:flex-start!important;padding:96px 14px 18px!important;' +
-      'background:#ffffff!important;overflow:hidden!important;font-family:system-ui,-apple-system,Segoe UI,sans-serif!important;';
-    return wrapper;
-  }
-
-  function installPageShield() {
-    var style = document.getElementById('__scriptHubCodexQuotaStyle');
-    if (!style) {
-      style = document.createElement('style');
-      style.id = '__scriptHubCodexQuotaStyle';
-      (document.head || document.documentElement).appendChild(style);
-    }
-    style.textContent =
-      'html,body{background:#fff!important;margin:0!important;overflow:hidden!important;}' +
-      'body>:not(#__scriptHubCodexQuotaLite){position:fixed!important;left:-20000px!important;top:0!important;' +
-      'width:1400px!important;min-height:900px!important;opacity:0!important;visibility:hidden!important;' +
-      'pointer-events:none!important;transform:none!important;}' +
-      '#__scriptHubCodexQuotaLite,#__scriptHubCodexQuotaLite *{box-sizing:border-box!important;}';
-  }
-
-  function createClock() {
-    var clock = document.createElement('div');
-    clock.id = '__scriptHubCodexQuotaClock';
-    clock.style.cssText =
-      'box-sizing:border-box!important;width:100%!important;text-align:center!important;' +
-      'color:#111827!important;line-height:1.15!important;user-select:none!important;';
-
-    var time = document.createElement('div');
-    time.setAttribute('data-role', 'time');
-    time.style.cssText =
-      'font-size:44px!important;font-weight:700!important;letter-spacing:0!important;' +
-      'font-variant-numeric:tabular-nums!important;';
-
-    var date = document.createElement('div');
-    date.setAttribute('data-role', 'date');
-    date.style.cssText =
-      'margin-top:8px!important;font-size:18px!important;font-weight:500!important;color:#6b7280!important;';
-
-    clock.appendChild(time);
-    clock.appendChild(date);
-    return clock;
-  }
-
-  function updateClock() {
-    var clock = document.getElementById('__scriptHubCodexQuotaClock');
-    if (!clock) {
-      return;
-    }
-
-    var now = new Date();
-    var time = clock.querySelector(`[data-role='time']`);
-    var date = clock.querySelector(`[data-role='date']`);
-    if (time) {
-      time.textContent = now.toLocaleTimeString('zh-CN', { hour12: false });
-    }
-    if (date) {
-      var dateText = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
-      var weekText = now.toLocaleDateString('zh-CN', { weekday: 'long' });
-      date.textContent = dateText + '  ' + weekText;
-    }
-  }
-
-  function extractQuota(group, pageText, fallback) {
-    var text = getSectionText(pageText, group.title);
-    if (!text && fallback) {
-      return fallback;
-    }
-
-    var percentMatch = text.match(/(\d{1,3})\s*%\s*剩余/) || text.match(/(\d{1,3})\s*%/);
-    var resetMatch = text.match(/重置时间[:：]?\s*((?:\d{4}年\d{1,2}月\d{1,2}日\s*)?\d{1,2}:\d{2})/);
-    if (!resetMatch) {
-      resetMatch = text.match(/重置时间[:：]?\s*([^ ]+)/);
-    }
-    var reset = resetMatch ? resetMatch[1] : '';
-    reset = reset
-      .replace(/5\s*小时使用限额.*$/g, '')
-      .replace(/每周使用限额.*$/g, '')
-      .trim();
-
-    var percent = percentMatch ? Math.max(0, Math.min(100, parseInt(percentMatch[1], 10))) : null;
-    return {
-      title: group.title,
-      percent: percent,
-      reset: reset || (fallback ? fallback.reset : ''),
-      ok: percent !== null
-    };
-  }
-
-  function makeQuotaCard(info) {
-    var card = document.createElement('div');
-    card.style.cssText =
-      'width:320px!important;min-height:134px!important;padding:24px 26px!important;' +
-      'border:1px solid #e5e7eb!important;border-radius:18px!important;background:#fff!important;' +
-      'box-shadow:0 14px 30px rgba(15,23,42,.06)!important;color:#111827!important;';
-
-    var title = document.createElement('div');
-    title.textContent = info.title;
-    title.style.cssText = 'font-size:14px!important;color:#6b7280!important;margin-bottom:8px!important;';
-
-    var value = document.createElement('div');
-    value.style.cssText = 'font-size:26px!important;font-weight:700!important;line-height:1.1!important;margin-bottom:20px!important;';
-    var percentText = info.ok ? String(info.percent) + '%' : '--%';
-    value.textContent = percentText + ' 剩余';
-
-    var track = document.createElement('div');
-    track.style.cssText =
-      'height:12px!important;border-radius:999px!important;background:#e5e7eb!important;' +
-      'overflow:hidden!important;margin-bottom:18px!important;';
-
-    var bar = document.createElement('div');
-    bar.style.cssText =
-      'height:100%!important;border-radius:999px!important;background:#22c55e!important;width:' +
-      (info.ok ? info.percent : 0) + '%!important;';
-    track.appendChild(bar);
-
-    var reset = document.createElement('div');
-    reset.textContent = '重置时间: ' + (info.reset || '读取中');
-    reset.style.cssText = 'font-size:13px!important;color:#6b7280!important;line-height:1.4!important;';
-
-    card.appendChild(title);
-    card.appendChild(value);
-    card.appendChild(track);
-    card.appendChild(reset);
-    return card;
-  }
-
-  function createCardRow() {
-    var row = document.createElement('div');
-    row.id = '__scriptHubCodexQuotaCards';
-    row.style.cssText =
-      'box-sizing:border-box!important;width:100%!important;display:flex!important;gap:16px!important;' +
-      'align-items:center!important;justify-content:center!important;margin-top:30px!important;';
-    return row;
-  }
-
-  function render() {
-    if (!document.body) {
-      return;
-    }
-
-    var wrapper = ensureWrapper();
-    installPageShield();
-
-    var pageText = getOriginalText();
-    var data = [];
-    for (var i = 0; i < groups.length; i++) {
-      data.push(extractQuota(groups[i], pageText, lastData[i] || { title: groups[i].title, percent: null, reset: '', ok: false }));
-    }
-
-    if (data.length >= 2 && (data[0].ok || data[1].ok)) {
-      lastData = data;
-    }
-
-    wrapper.innerHTML = '';
-    var clock = createClock();
-    wrapper.appendChild(clock);
-    updateClock();
-
-    var row = createCardRow();
-    for (var j = 0; j < data.length; j++) {
-      row.appendChild(makeQuotaCard(data[j]));
-    }
-    wrapper.appendChild(row);
-  }
-
-  render();
-  window.setInterval(render, 3000);
-  window.setInterval(updateClock, 1000);
-})();
-";
+            process.StandardInput.WriteLine(serializer.Serialize(message));
+            process.StandardInput.Flush();
         }
+
+        private static IDictionary<string, object> ReadResponse(Process process, JavaScriptSerializer serializer, int id, int timeoutMs)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                var remaining = Math.Max(1, (int)(deadline - DateTime.UtcNow).TotalMilliseconds);
+                var lineTask = process.StandardOutput.ReadLineAsync();
+                if (!lineTask.Wait(remaining))
+                {
+                    break;
+                }
+
+                var line = lineTask.Result;
+                if (line == null)
+                {
+                    break;
+                }
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                var message = serializer.DeserializeObject(line) as IDictionary<string, object>;
+                if (message == null || !MatchesId(message, id))
+                {
+                    continue;
+                }
+
+                object error;
+                if (message.TryGetValue("error", out error) && error != null)
+                {
+                    throw new InvalidOperationException("Codex app-server 返回错误: " + ReadErrorMessage(error));
+                }
+                return message;
+            }
+
+            throw new TimeoutException("等待 Codex 额度数据超时。");
+        }
+
+        private static CodexQuotaSnapshot ParseSnapshot(IDictionary<string, object> response)
+        {
+            var result = GetDictionary(response, "result");
+            var rateLimits = GetDictionary(result, "rateLimits");
+            var byLimitId = GetDictionary(result, "rateLimitsByLimitId");
+            if (byLimitId != null)
+            {
+                var codexBucket = GetDictionary(byLimitId, "codex");
+                if (codexBucket != null)
+                {
+                    rateLimits = codexBucket;
+                }
+            }
+            if (rateLimits == null)
+            {
+                throw new InvalidOperationException("Codex app-server 未返回额度数据。");
+            }
+
+            return new CodexQuotaSnapshot
+            {
+                PlanType = GetString(rateLimits, "planType"),
+                Primary = ParseWindow(GetDictionary(rateLimits, "primary")),
+                Secondary = ParseWindow(GetDictionary(rateLimits, "secondary"))
+            };
+        }
+
+        private static CodexRateLimitWindow ParseWindow(IDictionary<string, object> data)
+        {
+            if (data == null)
+            {
+                return null;
+            }
+
+            var resetsAt = GetInt64(data, "resetsAt");
+            return new CodexRateLimitWindow
+            {
+                UsedPercent = GetInt32(data, "usedPercent") ?? 0,
+                WindowDurationMinutes = GetInt64(data, "windowDurationMins"),
+                ResetsAt = resetsAt.HasValue
+                    ? DateTimeOffset.FromUnixTimeSeconds(resetsAt.Value).ToLocalTime().DateTime
+                    : (DateTime?)null
+            };
+        }
+
+        private static string FindCodexExecutable()
+        {
+            var candidates = new List<string>();
+            var configured = Environment.GetEnvironmentVariable("SCRIPTHUB_CODEX_EXE");
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                candidates.Add(configured);
+            }
+
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var appBin = Path.Combine(localAppData, "OpenAI", "Codex", "bin");
+            candidates.Add(Path.Combine(appBin, "codex.exe"));
+            try
+            {
+                candidates.AddRange(Directory.GetFiles(appBin, "codex.exe", SearchOption.AllDirectories));
+            }
+            catch
+            {
+            }
+
+            var codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+            candidates.Add(Path.Combine(codexHome, "plugins", ".plugin-appserver", "codex.exe"));
+            candidates.Add(Path.Combine(codexHome, ".sandbox-bin", "codex.exe"));
+
+            return candidates.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path));
+        }
+
+        private static string StopProcess(Process process, Task<string> errorTask)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.StandardInput.Close();
+                    if (!process.WaitForExit(1200))
+                    {
+                        process.Kill();
+                        process.WaitForExit();
+                    }
+                }
+
+                if (errorTask != null && errorTask.Wait(300))
+                {
+                    return errorTask.Result;
+                }
+            }
+            catch
+            {
+            }
+            return string.Empty;
+        }
+
+        private static bool MatchesId(IDictionary<string, object> message, int id)
+        {
+            object value;
+            return message.TryGetValue("id", out value) && value != null && Convert.ToString(value) == id.ToString();
+        }
+
+        private static IDictionary<string, object> GetDictionary(IDictionary<string, object> source, string key)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+            object value;
+            return source.TryGetValue(key, out value) ? value as IDictionary<string, object> : null;
+        }
+
+        private static string GetString(IDictionary<string, object> source, string key)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+            object value;
+            return source.TryGetValue(key, out value) && value != null ? Convert.ToString(value) : null;
+        }
+
+        private static int? GetInt32(IDictionary<string, object> source, string key)
+        {
+            var value = GetInt64(source, key);
+            return value.HasValue ? (int?)Math.Max(int.MinValue, Math.Min(int.MaxValue, value.Value)) : null;
+        }
+
+        private static long? GetInt64(IDictionary<string, object> source, string key)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+            object value;
+            if (!source.TryGetValue(key, out value) || value == null)
+            {
+                return null;
+            }
+
+            long parsed;
+            return long.TryParse(Convert.ToString(value), out parsed) ? (long?)parsed : null;
+        }
+
+        private static string ReadErrorMessage(object error)
+        {
+            var dictionary = error as IDictionary<string, object>;
+            return dictionary == null ? Convert.ToString(error) : GetString(dictionary, "message") ?? Convert.ToString(error);
+        }
+    }
+
+    internal sealed class CodexQuotaSnapshot
+    {
+        public string PlanType;
+        public CodexRateLimitWindow Primary;
+        public CodexRateLimitWindow Secondary;
+    }
+
+    internal sealed class CodexRateLimitWindow
+    {
+        public int UsedPercent;
+        public long? WindowDurationMinutes;
+        public DateTime? ResetsAt;
     }
 
     internal static class MediaStatusReader
@@ -1269,10 +1445,6 @@ namespace ScriptHub
                     {
                         settings.QqMusicLyrics.MinActionGapMs = ParseInt(value, 1200);
                     }
-                    else if (string.Equals(key, "codexQuota.url", StringComparison.OrdinalIgnoreCase))
-                    {
-                        settings.CodexQuota.Url = value.Length == 0 ? settings.CodexQuota.Url : value;
-                    }
                     else if (string.Equals(key, "codexQuota.width", StringComparison.OrdinalIgnoreCase))
                     {
                         settings.CodexQuota.Width = ParseInt(value, 660);
@@ -1318,7 +1490,6 @@ namespace ScriptHub
                     "qqMusicLyrics.enabled=" + QqMusicLyrics.Enabled.ToString().ToLowerInvariant(),
                     "qqMusicLyrics.pollIntervalMs=" + QqMusicLyrics.PollIntervalMs,
                     "qqMusicLyrics.minActionGapMs=" + QqMusicLyrics.MinActionGapMs,
-                    "codexQuota.url=" + CodexQuota.Url,
                     "codexQuota.width=" + CodexQuota.Width,
                     "codexQuota.height=" + CodexQuota.Height,
                     "codexQuota.x=" + CodexQuota.X,
@@ -1356,9 +1527,8 @@ namespace ScriptHub
 
     internal sealed class CodexQuotaSettings
     {
-        public string Url = "https://chatgpt.com/codex/cloud/settings/analytics#usage";
-        public int Width = 660;
-        public int Height = 360;
+        public int Width = 1094;
+        public int Height = 496;
         public int X = -1;
         public int Y = -1;
         public bool OpenOnStartup = false;
@@ -1371,7 +1541,6 @@ namespace ScriptHub
                 return;
             }
 
-            Url = other.Url;
             Width = other.Width;
             Height = other.Height;
             X = other.X;
