@@ -665,20 +665,12 @@ namespace ScriptHub
         {
             base.OnPaint(e);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            var cardBounds = new Rectangle(1, 1, Math.Max(1, Width - 2), Math.Max(1, Height - 2));
-            using (var path = CreateRoundedRectangle(cardBounds, 16))
-            using (var border = new Pen(Color.FromArgb(229, 231, 235)))
-            using (var fill = new SolidBrush(Color.White))
-            {
-                e.Graphics.FillPath(fill, path);
-                e.Graphics.DrawPath(border, path);
-            }
 
             const int padding = 26;
             using (var titleFont = new Font("Microsoft YaHei UI", 13f, FontStyle.Regular))
             using (var valueFont = new Font("Segoe UI", 31f, FontStyle.Bold))
             using (var suffixFont = new Font("Microsoft YaHei UI", 18f, FontStyle.Regular))
-            using (var resetFont = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular))
+            using (var resetFont = new Font("Microsoft YaHei UI", 13f, FontStyle.Regular))
             {
                 TextRenderer.DrawText(e.Graphics, _title, titleFont,
                     new Rectangle(padding, 22, Width - padding * 2, 26), Color.FromArgb(100, 116, 139),
@@ -713,7 +705,7 @@ namespace ScriptHub
 
                 var reset = FormatResetTime(_resetsAt);
                 TextRenderer.DrawText(e.Graphics, reset, resetFont,
-                    new Rectangle(padding, 147, Width - padding * 2, 27), Color.FromArgb(100, 116, 139),
+                    new Rectangle(padding, 145, Width - padding * 2, 31), Color.FromArgb(100, 116, 139),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
             }
         }
