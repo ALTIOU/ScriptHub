@@ -642,12 +642,12 @@ namespace ScriptHub
                     e.Graphics.FillPath(trackBrush, trackPath);
                 }
 
-                if (_remainingPercent.HasValue && _remainingPercent.Value > 0)
+                if (_remainingPercent.HasValue)
                 {
                     var fillWidth = Math.Max(4, (int)Math.Round(track.Width * (_remainingPercent.Value / 100.0)));
                     var fill = new Rectangle(track.X, track.Y, Math.Min(track.Width, fillWidth), track.Height);
                     using (var fillPath = CreateRoundedRectangle(fill, 6))
-                    using (var fillBrush = new SolidBrush(Color.FromArgb(34, 197, 94)))
+                    using (var fillBrush = new SolidBrush(ProgressColorFor(_remainingPercent.Value)))
                     {
                         e.Graphics.FillPath(fillBrush, fillPath);
                     }
@@ -658,6 +658,19 @@ namespace ScriptHub
                     new Rectangle(padding, 132, Width - padding * 2, 23), Color.FromArgb(100, 116, 139),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
             }
+        }
+
+        internal static Color ProgressColorFor(int remainingPercent)
+        {
+            if (remainingPercent >= 60)
+            {
+                return Color.FromArgb(34, 197, 94);
+            }
+            if (remainingPercent >= 30)
+            {
+                return Color.FromArgb(245, 158, 11);
+            }
+            return Color.FromArgb(239, 68, 68);
         }
 
         private static string FormatResetTime(DateTime? resetAt)
