@@ -438,7 +438,7 @@ namespace ScriptHub
             _statusDot = new Label
             {
                 AutoSize = false,
-                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+                Font = new Font("Segoe UI", 13f, FontStyle.Bold),
                 Text = "●",
                 TextAlign = ContentAlignment.MiddleCenter,
                 UseCompatibleTextRendering = true
@@ -446,7 +446,7 @@ namespace ScriptHub
             _statusLabel = new Label
             {
                 AutoSize = false,
-                Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
+                Font = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular),
                 ForeColor = Color.FromArgb(100, 116, 139),
                 TextAlign = ContentAlignment.MiddleCenter,
                 UseCompatibleTextRendering = true
@@ -517,15 +517,15 @@ namespace ScriptHub
             _clockLabel.SetBounds(0, 46, ClientSize.Width, 58);
             _dateLabel.SetBounds(0, 109, ClientSize.Width, 30);
 
-            const int cardHeight = 166;
+            const int cardHeight = 190;
             const int cardGap = 18;
-            var cardWidth = Math.Min(320, Math.Max(220, (ClientSize.Width - 80 - cardGap) / 2));
+            var cardWidth = Math.Min(360, Math.Max(220, (ClientSize.Width - 80 - cardGap) / 2));
             var totalWidth = cardWidth * 2 + cardGap;
             var left = Math.Max(20, (ClientSize.Width - totalWidth) / 2);
-            var top = 194;
+            var top = 188;
             _primaryCard.SetBounds(left, top, cardWidth, cardHeight);
             _secondaryCard.SetBounds(left + cardWidth + cardGap, top, cardWidth, cardHeight);
-            _statusLabel.SetBounds(0, top + cardHeight + 17, ClientSize.Width, 24);
+            _statusLabel.SetBounds(0, top + cardHeight + 17, ClientSize.Width, 26);
             LayoutStatusLine();
         }
 
@@ -620,7 +620,7 @@ namespace ScriptHub
 
             var textSize = TextRenderer.MeasureText(_statusLabel.Text, _statusLabel.Font, Size.Empty, TextFormatFlags.NoPadding);
             var left = Math.Max(0, (ClientSize.Width - textSize.Width) / 2);
-            _statusDot.SetBounds(Math.Max(0, left - 17), _statusLabel.Top + 3, 14, 16);
+            _statusDot.SetBounds(Math.Max(0, left - 20), _statusLabel.Top + 2, 17, 19);
         }
 
         private enum QuotaReadState
@@ -675,25 +675,25 @@ namespace ScriptHub
             }
 
             const int padding = 26;
-            using (var titleFont = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular))
-            using (var valueFont = new Font("Segoe UI", 25f, FontStyle.Bold))
-            using (var suffixFont = new Font("Microsoft YaHei UI", 15f, FontStyle.Regular))
-            using (var resetFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular))
+            using (var titleFont = new Font("Microsoft YaHei UI", 13f, FontStyle.Regular))
+            using (var valueFont = new Font("Segoe UI", 31f, FontStyle.Bold))
+            using (var suffixFont = new Font("Microsoft YaHei UI", 18f, FontStyle.Regular))
+            using (var resetFont = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular))
             {
                 TextRenderer.DrawText(e.Graphics, _title, titleFont,
-                    new Rectangle(padding, 24, Width - padding * 2, 22), Color.FromArgb(100, 116, 139),
+                    new Rectangle(padding, 22, Width - padding * 2, 26), Color.FromArgb(100, 116, 139),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 
                 var number = _remainingPercent.HasValue ? _remainingPercent.Value + "%" : "--";
                 var numberSize = TextRenderer.MeasureText(e.Graphics, number, valueFont, Size.Empty, TextFormatFlags.NoPadding);
                 TextRenderer.DrawText(e.Graphics, number, valueFont,
-                    new Rectangle(padding, 49, numberSize.Width + 4, 38), Color.FromArgb(15, 23, 42),
+                    new Rectangle(padding, 47, numberSize.Width + 4, 46), Color.FromArgb(15, 23, 42),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
                 TextRenderer.DrawText(e.Graphics, "剩余", suffixFont,
-                    new Rectangle(padding + numberSize.Width + 8, 57, 62, 25), Color.FromArgb(15, 23, 42),
+                    new Rectangle(padding + numberSize.Width + 9, 59, 74, 29), Color.FromArgb(15, 23, 42),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 
-                var track = new Rectangle(padding, 102, Math.Max(1, Width - padding * 2), 12);
+                var track = new Rectangle(padding, 112, Math.Max(1, Width - padding * 2), 14);
                 using (var trackPath = CreateRoundedRectangle(track, 6))
                 using (var trackBrush = new SolidBrush(Color.FromArgb(229, 231, 235)))
                 {
@@ -713,7 +713,7 @@ namespace ScriptHub
 
                 var reset = FormatResetTime(_resetsAt);
                 TextRenderer.DrawText(e.Graphics, reset, resetFont,
-                    new Rectangle(padding, 132, Width - padding * 2, 23), Color.FromArgb(100, 116, 139),
+                    new Rectangle(padding, 147, Width - padding * 2, 27), Color.FromArgb(100, 116, 139),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
             }
         }
