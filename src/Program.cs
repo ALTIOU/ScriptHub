@@ -389,11 +389,13 @@ namespace ScriptHub
         private readonly System.Windows.Forms.Timer _clockTimer;
         private readonly Label _clockLabel;
         private readonly Label _dateLabel;
+        private readonly Label _statusDot;
         private readonly Label _statusLabel;
         private readonly QuotaCardControl _primaryCard;
         private readonly QuotaCardControl _secondaryCard;
         private bool _refreshInProgress;
         private DateTime? _lastSuccessfulRefresh;
+        private QuotaReadState _quotaReadState;
 
         public CodexQuotaForm(Logger logger, CodexQuotaSettings settings)
         {
@@ -433,13 +435,20 @@ namespace ScriptHub
             };
             _primaryCard = new QuotaCardControl("5 小时使用额度");
             _secondaryCard = new QuotaCardControl("每周使用额度");
+            _statusDot = new Label
+            {
+                AutoSize = false,
+                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+                Text = "●",
+                TextAlign = ContentAlignment.MiddleCenter,
+                UseCompatibleTextRendering = true
+            };
             _statusLabel = new Label
             {
                 AutoSize = false,
                 Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
                 ForeColor = Color.FromArgb(100, 116, 139),
                 TextAlign = ContentAlignment.MiddleCenter,
-                Text = "正在读取本机 Codex 额度...",
                 UseCompatibleTextRendering = true
             };
 
@@ -447,7 +456,9 @@ namespace ScriptHub
             Controls.Add(_dateLabel);
             Controls.Add(_primaryCard);
             Controls.Add(_secondaryCard);
+            Controls.Add(_statusDot);
             Controls.Add(_statusLabel);
+            SetStatus(QuotaReadState.Reading, "正在读取本机 Codex 额度...");
 
             var menu = new ContextMenuStrip();
             menu.Items.Add(new ToolStripMenuItem("立即刷新", null, (_, __) => RefreshQuota()));
@@ -515,6 +526,7 @@ namespace ScriptHub
             _primaryCard.SetBounds(left, top, cardWidth, cardHeight);
             _secondaryCard.SetBounds(left + cardWidth + cardGap, top, cardWidth, cardHeight);
             _statusLabel.SetBounds(0, top + cardHeight + 17, ClientSize.Width, 24);
+            LayoutStatusLine();
         }
 
         private void UpdateClock()
@@ -523,6 +535,15 @@ namespace ScriptHub
             _clockLabel.Text = now.ToString("HH:mm:ss");
             var weekdays = new[] { "星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六" };
             _dateLabel.Text = now.Year + "年" + now.Month + "月" + now.Day + "日 " + weekdays[(int)now.DayOfWeek];
+            _primaryCard.RefreshCountdown();
+            _secondaryCard.RefreshCountdown();
+
+            if (!_refreshInProgress && _quotaReadState == QuotaReadState.Fresh && _lastSuccessfulRefresh.HasValue &&
+                _settings.RefreshIntervalMinutes > 0 &&
+                now - _lastSuccessfulRefresh.Value > TimeSpan.FromMinutes(_settings.RefreshIntervalMinutes * 2 + 1))
+            {
+                SetStatus(QuotaReadState.Stale, "数据较旧 · 更新于 " + _lastSuccessfulRefresh.Value.ToString("HH:mm:ss"));
+            }
         }
 
         private async void RefreshQuota()
@@ -533,11 +554,9 @@ namespace ScriptHub
             }
 
             _refreshInProgress = true;
-            if (!_lastSuccessfulRefresh.HasValue)
-            {
-                _statusLabel.ForeColor = Color.FromArgb(100, 116, 139);
-                _statusLabel.Text = "正在读取本机 Codex 额度...";
-            }
+            SetStatus(QuotaReadState.Reading, _lastSuccessfulRefresh.HasValue
+                ? "正在更新 · 上次更新于 " + _lastSuccessfulRefresh.Value.ToString("HH:mm:ss")
+                : "正在读取本机 Codex 额度...");
 
             try
             {
@@ -550,17 +569,15 @@ namespace ScriptHub
                 _primaryCard.UpdateQuota(snapshot.Primary);
                 _secondaryCard.UpdateQuota(snapshot.Secondary);
                 _lastSuccessfulRefresh = DateTime.Now;
-                _statusLabel.ForeColor = Color.FromArgb(100, 116, 139);
-                _statusLabel.Text = "本机 Codex 数据 · 更新于 " + _lastSuccessfulRefresh.Value.ToString("HH:mm:ss");
+                SetStatus(QuotaReadState.Fresh, "本机 Codex 数据 · 更新于 " + _lastSuccessfulRefresh.Value.ToString("HH:mm:ss"));
                 _logger.Info("Codex quota refreshed via app-server. Plan=" + (snapshot.PlanType ?? "unknown"));
             }
             catch (Exception ex)
             {
                 _logger.Error("Read Codex quota via app-server failed: " + ex);
-                _statusLabel.ForeColor = Color.FromArgb(185, 28, 28);
-                _statusLabel.Text = _lastSuccessfulRefresh.HasValue
+                SetStatus(QuotaReadState.Error, _lastSuccessfulRefresh.HasValue
                     ? "读取失败，保留上次数据 · " + _lastSuccessfulRefresh.Value.ToString("HH:mm:ss")
-                    : "读取失败，请确认 Codex 桌面端已登录";
+                    : "读取失败，请确认 Codex 桌面端已登录");
             }
             finally
             {
@@ -579,6 +596,39 @@ namespace ScriptHub
             _settings.Y = Location.Y;
             _settings.Width = Size.Width;
             _settings.Height = Size.Height;
+        }
+
+        private void SetStatus(QuotaReadState state, string text)
+        {
+            _quotaReadState = state;
+            _statusLabel.Text = text;
+            _statusLabel.ForeColor = Color.FromArgb(100, 116, 139);
+            _statusDot.ForeColor = state == QuotaReadState.Fresh
+                ? Color.FromArgb(34, 197, 94)
+                : state == QuotaReadState.Error
+                    ? Color.FromArgb(239, 68, 68)
+                    : Color.FromArgb(245, 158, 11);
+            LayoutStatusLine();
+        }
+
+        private void LayoutStatusLine()
+        {
+            if (_statusLabel == null || _statusDot == null || ClientSize.Width <= 0)
+            {
+                return;
+            }
+
+            var textSize = TextRenderer.MeasureText(_statusLabel.Text, _statusLabel.Font, Size.Empty, TextFormatFlags.NoPadding);
+            var left = Math.Max(0, (ClientSize.Width - textSize.Width) / 2);
+            _statusDot.SetBounds(Math.Max(0, left - 17), _statusLabel.Top + 3, 14, 16);
+        }
+
+        private enum QuotaReadState
+        {
+            Reading,
+            Fresh,
+            Stale,
+            Error
         }
     }
 
@@ -603,6 +653,14 @@ namespace ScriptHub
             Invalidate();
         }
 
+        public void RefreshCountdown()
+        {
+            if (_resetsAt.HasValue)
+            {
+                Invalidate();
+            }
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
@@ -620,7 +678,7 @@ namespace ScriptHub
             using (var titleFont = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular))
             using (var valueFont = new Font("Segoe UI", 25f, FontStyle.Bold))
             using (var suffixFont = new Font("Microsoft YaHei UI", 15f, FontStyle.Regular))
-            using (var resetFont = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular))
+            using (var resetFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular))
             {
                 TextRenderer.DrawText(e.Graphics, _title, titleFont,
                     new Rectangle(padding, 24, Width - padding * 2, 22), Color.FromArgb(100, 116, 139),
@@ -653,7 +711,7 @@ namespace ScriptHub
                     }
                 }
 
-                var reset = "重置时间: " + FormatResetTime(_resetsAt);
+                var reset = FormatResetTime(_resetsAt);
                 TextRenderer.DrawText(e.Graphics, reset, resetFont,
                     new Rectangle(padding, 132, Width - padding * 2, 23), Color.FromArgb(100, 116, 139),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
@@ -681,9 +739,21 @@ namespace ScriptHub
             }
 
             var now = DateTime.Now;
-            return resetAt.Value.Date == now.Date
+            var remaining = resetAt.Value - now;
+            if (remaining <= TimeSpan.Zero)
+            {
+                return "即将重置";
+            }
+
+            var countdown = remaining.Days > 0
+                ? remaining.Days + "天" + remaining.Hours + "小时"
+                : remaining.Hours > 0
+                    ? remaining.Hours + "小时" + remaining.Minutes + "分"
+                    : Math.Max(1, remaining.Minutes) + "分";
+            var absolute = resetAt.Value.Date == now.Date
                 ? resetAt.Value.ToString("HH:mm")
-                : resetAt.Value.Year + "年" + resetAt.Value.Month + "月" + resetAt.Value.Day + "日 " + resetAt.Value.ToString("HH:mm");
+                : resetAt.Value.Month + "月" + resetAt.Value.Day + "日 " + resetAt.Value.ToString("HH:mm");
+            return "距重置 " + countdown + " · " + absolute;
         }
 
         private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
