@@ -214,6 +214,10 @@ namespace ScriptHub
         private readonly object _lock = new object();
         private QqMusicLyricsSettings _settings;
         private string _lastStatus = "Unknown";
+        private bool? _desiredLyricsVisibility;
+        private bool? _pendingLyricsVisibility;
+        private DateTime _pendingLyricsSinceUtc;
+        private DateTime _lastHotkeyUtc;
         private bool _disposed;
 
         public event EventHandler EnabledChanged;
@@ -297,16 +301,18 @@ namespace ScriptHub
 
                     if (status == "Playing")
                     {
-                        SetLyricsVisible(true);
+                        RequestLyricsVisibility(true);
                     }
                     else if (status == "Paused" || status == "Stopped")
                     {
-                        SetLyricsVisible(false);
+                        RequestLyricsVisibility(false);
                     }
                     else if (!Process.GetProcessesByName("QQMusic").Any())
                     {
                         return;
                     }
+
+                    TryApplyPendingLyricsChange();
                 }
                 catch (Exception ex)
                 {
@@ -319,7 +325,13 @@ namespace ScriptHub
         {
             try
             {
-                SetLyricsVisible(true, force: true);
+                _desiredLyricsVisibility = true;
+                _pendingLyricsVisibility = null;
+                if (UserActivityGuard.HasRecentInput(_settings.UserIdleGuardMs))
+                {
+                    return;
+                }
+                SetLyricsVisible(true);
             }
             catch (Exception ex)
             {
@@ -327,30 +339,73 @@ namespace ScriptHub
             }
         }
 
-        private void SetLyricsVisible(bool visible, bool force = false)
+        private void RequestLyricsVisibility(bool visible)
         {
             var state = QqMusicWindowFinder.GetDesktopLyricsState();
-            if (IsTargetSatisfied(visible, state) && !force)
+            if (_desiredLyricsVisibility != visible)
+            {
+                _desiredLyricsVisibility = visible;
+                _pendingLyricsVisibility = visible;
+                _pendingLyricsSinceUtc = DateTime.UtcNow;
+                return;
+            }
+
+            if (!_pendingLyricsVisibility.HasValue && !IsTargetSatisfied(visible, state))
+            {
+                _pendingLyricsVisibility = visible;
+                _pendingLyricsSinceUtc = DateTime.UtcNow;
+            }
+        }
+
+        private void TryApplyPendingLyricsChange()
+        {
+            if (!_pendingLyricsVisibility.HasValue)
             {
                 return;
             }
 
-            if (!NeedsInternalToggle(visible, state) && !force)
+            var visible = _pendingLyricsVisibility.Value;
+            var state = QqMusicWindowFinder.GetDesktopLyricsState();
+            if (IsTargetSatisfied(visible, state))
+            {
+                _pendingLyricsVisibility = null;
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            if ((now - _pendingLyricsSinceUtc).TotalMilliseconds < _settings.PlaybackSettleMs ||
+                (now - _lastHotkeyUtc).TotalMilliseconds < _settings.MinActionGapMs ||
+                UserActivityGuard.HasRecentInput(_settings.UserIdleGuardMs))
             {
                 return;
+            }
+
+            _lastHotkeyUtc = now;
+            if (SetLyricsVisible(visible))
+            {
+                _pendingLyricsVisibility = null;
+            }
+        }
+
+        private bool SetLyricsVisible(bool visible)
+        {
+            var state = QqMusicWindowFinder.GetDesktopLyricsState();
+            if (IsTargetSatisfied(visible, state))
+            {
+                return true;
+            }
+
+            if (!NeedsInternalToggle(visible, state))
+            {
+                return false;
             }
 
             ToggleDesktopLyricsAndWait(visible);
             var finalState = QqMusicWindowFinder.GetDesktopLyricsState();
-            if (!IsTargetSatisfied(visible, finalState))
-            {
-                ToggleDesktopLyricsAndWait(visible);
-                finalState = QqMusicWindowFinder.GetDesktopLyricsState();
-            }
-
             _logger.Info("Desktop lyrics " + (visible ? "shown" : "hidden") +
                 " via QQMusic hotkey. Roots=" + finalState.RootCount +
                 " VisibleRoots=" + finalState.VisibleRootCount);
+            return IsTargetSatisfied(visible, finalState);
         }
 
         private static bool IsTargetSatisfied(bool visible, DesktopLyricsState state)
@@ -1386,6 +1441,13 @@ namespace ScriptHub
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        public struct LASTINPUTINFO
+        {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         public struct RECT
         {
             public int Left;
@@ -1420,6 +1482,9 @@ namespace ScriptHub
 
         [DllImport("user32.dll")]
         public static extern bool GetCursorPos(out POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
 
         [DllImport("user32.dll")]
         public static extern bool SetCursorPos(int x, int y);
@@ -1476,6 +1541,30 @@ namespace ScriptHub
         }
     }
 
+    internal static class UserActivityGuard
+    {
+        public static bool HasRecentInput(int guardMs)
+        {
+            if (guardMs <= 0)
+            {
+                return false;
+            }
+
+            var info = new NativeMethods.LASTINPUTINFO
+            {
+                cbSize = (uint)Marshal.SizeOf(typeof(NativeMethods.LASTINPUTINFO))
+            };
+            if (!NativeMethods.GetLastInputInfo(ref info))
+            {
+                return false;
+            }
+
+            var now = unchecked((uint)Environment.TickCount);
+            var elapsed = unchecked(now - info.dwTime);
+            return elapsed < guardMs;
+        }
+    }
+
     internal sealed class HubSettings
     {
         public QqMusicLyricsSettings QqMusicLyrics = new QqMusicLyricsSettings();
@@ -1519,6 +1608,14 @@ namespace ScriptHub
                     else if (string.Equals(key, "qqMusicLyrics.minActionGapMs", StringComparison.OrdinalIgnoreCase))
                     {
                         settings.QqMusicLyrics.MinActionGapMs = ParseInt(value, 1200);
+                    }
+                    else if (string.Equals(key, "qqMusicLyrics.userIdleGuardMs", StringComparison.OrdinalIgnoreCase))
+                    {
+                        settings.QqMusicLyrics.UserIdleGuardMs = ParseInt(value, 1500);
+                    }
+                    else if (string.Equals(key, "qqMusicLyrics.playbackSettleMs", StringComparison.OrdinalIgnoreCase))
+                    {
+                        settings.QqMusicLyrics.PlaybackSettleMs = ParseInt(value, 1200);
                     }
                     else if (string.Equals(key, "codexQuota.width", StringComparison.OrdinalIgnoreCase))
                     {
@@ -1565,6 +1662,8 @@ namespace ScriptHub
                     "qqMusicLyrics.enabled=" + QqMusicLyrics.Enabled.ToString().ToLowerInvariant(),
                     "qqMusicLyrics.pollIntervalMs=" + QqMusicLyrics.PollIntervalMs,
                     "qqMusicLyrics.minActionGapMs=" + QqMusicLyrics.MinActionGapMs,
+                    "qqMusicLyrics.userIdleGuardMs=" + QqMusicLyrics.UserIdleGuardMs,
+                    "qqMusicLyrics.playbackSettleMs=" + QqMusicLyrics.PlaybackSettleMs,
                     "codexQuota.width=" + CodexQuota.Width,
                     "codexQuota.height=" + CodexQuota.Height,
                     "codexQuota.x=" + CodexQuota.X,
@@ -1598,6 +1697,8 @@ namespace ScriptHub
         public bool Enabled = true;
         public int PollIntervalMs = 800;
         public int MinActionGapMs = 1200;
+        public int UserIdleGuardMs = 1500;
+        public int PlaybackSettleMs = 1200;
     }
 
     internal sealed class CodexQuotaSettings
