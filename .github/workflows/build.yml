@@ -1,0 +1,47 @@
+name: Build Windows application
+
+on:
+  push:
+    paths:
+      - src/**
+      - scripts/build.ps1
+      - config/settings.example.ini
+      - .github/workflows/build.yml
+  pull_request:
+    paths:
+      - src/**
+      - scripts/build.ps1
+      - config/settings.example.ini
+      - .github/workflows/build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Compile using the existing .NET Framework build script
+        shell: powershell
+        run: |
+          .\scripts\build.ps1
+          if (-not (Test-Path -LiteralPath .\ScriptHub.exe)) {
+            throw 'The build did not produce ScriptHub.exe.'
+          }
+
+      - name: Upload compiled application and configuration template
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ScriptHub-windows-x64
+          path: |
+            ScriptHub.exe
+            config/settings.example.ini
+            scripts/install-startup.ps1
+            scripts/uninstall-startup.ps1
+            README.md
+          if-no-files-found: error
+          retention-days: 14
